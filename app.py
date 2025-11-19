@@ -9,7 +9,7 @@ from dateutil import parser
 # 1. 系统配置与样式 (UI/UX)
 # ==========================================
 st.set_page_config(
-    page_title="CloudPulse Gov | 全球云产业雷达",
+    page_title="CloudPulse-全球云计算相关资讯",
     page_icon="🌩️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -406,4 +406,5 @@ else:
                 </div>
             </div>
             """, unsafe_allow_html=True)
+
 
