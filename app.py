@@ -344,7 +344,7 @@ if "行业深度周报" in view_mode:
     st.markdown(final_html, unsafe_allow_html=True)
 
 else:
-    st.title("CloudPulse Gov | 全球云产业雷达 🏛️")
+    st.title("CloudPulse-全球云计算相关资讯🏛️")
     
     # 新闻过滤
     if "国际" in view_mode:
@@ -406,5 +406,6 @@ else:
                 </div>
             </div>
             """, unsafe_allow_html=True)
+
 
 
