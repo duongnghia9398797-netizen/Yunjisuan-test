@@ -97,12 +97,12 @@ def is_policy_news(title):
             return True
     return False
 
-@st.cache_data(ttl=900) # 15分钟缓存，减轻接口压力
+@st.cache_data(ttl=900) # 15分钟缓存
 def fetch_authoritative_news():
     """
-    获取并严格过滤新闻
+    获取并严格过滤新闻 (修复了时区错误)
     """
-    # 搜索查询构造：增加“政策、发改委”等宏观词
+    # 搜索查询
     query = "云计算 OR 算力 OR 数据要素 OR 工业互联网 OR 阿里云 OR 华为云 OR 工信部 OR 发改委 when:7d"
     encoded_query = query.replace(" ", "+")
     
@@ -113,16 +113,23 @@ def fetch_authoritative_news():
     cleaned_data = []
     seen_titles = set()
     
-    cutoff_date = datetime.now(pd.Timestamp.now().tz.tzinfo) - timedelta(days=7)
+    # === 修复点：简化时间计算，避免 AttributeError ===
+    # 获取当前系统时间（不带时区），并在循环中把 RSS 时间也转为不带时区进行对比
+    now_naive = datetime.now()
+    cutoff_date = now_naive - timedelta(days=7)
     
     for entry in feed.entries:
         try:
-            # 1. 时间过滤 (T-7)
+            # 1. 解析时间
             pub_date = parser.parse(entry.published)
-            if pub_date.replace(tzinfo=None) < datetime.now() - timedelta(days=7):
+            
+            # === 修复点：核心时间过滤逻辑 ===
+            # pub_date 通常带时区 (如 UTC+8)，我们需要把它变成不带时区的 (replace(tzinfo=None))
+            # 这样才能和 datetime.now() 进行比较
+            if pub_date.replace(tzinfo=None) < cutoff_date:
                 continue
                 
-            # 2. 来源过滤 (核心步骤：只保留白名单)
+            # 2. 来源过滤 (白名单)
             source_name = entry.source.title if hasattr(entry, 'source') else ""
             if not is_trusted_source(source_name):
                 continue
@@ -145,7 +152,8 @@ def fetch_authoritative_news():
             }
             cleaned_data.append(item)
             
-        except Exception:
+        except Exception as e:
+            # 如果单条新闻解析出错，跳过该条，不影响整体运行
             continue
     
     # 按时间倒序排列
