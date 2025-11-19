@@ -2,3 +2,4 @@ streamlit
 feedparser
 pandas
 yfinance
+python-dateutil

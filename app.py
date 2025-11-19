@@ -3,250 +3,309 @@ import feedparser
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
+from dateutil import parser
 import re
 
 # ==========================================
-# 1. 页面配置与样式
+# 1. 系统配置与样式
 # ==========================================
 st.set_page_config(
-    page_title="CloudPulse CN | 云脉动",
-    page_icon="☁️",
+    page_title="CloudPulse Gov | 云产业政策与市场",
+    page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 自定义 CSS 美化
 st.markdown("""
 <style>
-    .news-card {
-        background-color: #f0f2f6;
-        padding: 15px;
-        border-radius: 10px;
-        margin-bottom: 15px;
-        border-left: 5px solid #4e8cff;
-    }
-    .news-title {
-        font-size: 18px;
-        font-weight: bold;
-        color: #1f2937;
-    }
-    .news-meta {
-        font-size: 12px;
-        color: #6b7280;
-        margin-top: 5px;
-    }
-    .stock-card {
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        padding: 15px;
-        text-align: center;
-        transition: transform 0.2s;
-    }
-    .stock-card:hover {
-        transform: scale(1.02);
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-    }
-    .positive { color: #ef4444; font-weight: bold; } /* A股红涨 */
-    .negative { color: #10b981; font-weight: bold; } /* A股绿跌 */
+    /* 政策卡片样式 - 红色调强调权威性 */
+    .policy-card { background-color: #fff1f2; padding: 15px; border-radius: 8px; margin-bottom: 12px; border-left: 5px solid #be123c; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    /* 市场卡片样式 - 蓝色调 */
+    .market-card { background-color: #f8fafc; padding: 15px; border-radius: 8px; margin-bottom: 12px; border-left: 5px solid #3b82f6; }
+    
+    .news-title { font-size: 16px; font-weight: 600; color: #111827; text-decoration: none; }
+    .news-title:hover { color: #2563eb; }
+    
+    .meta-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 8px; }
+    .tag-policy { background: #fda4af; color: #881337; } /* 政策标签 */
+    .tag-source { background: #e2e8f0; color: #475569; } /* 来源标签 */
+    
+    .stock-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 10px; background: white; transition: 0.3s; }
+    .stock-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.1); border-color: #cbd5e1; }
+    
+    .up { color: #d32f2f; font-weight: bold; }
+    .down { color: #2e7d32; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 核心逻辑：标的映射数据库
+# 2. 严格的可信源白名单 (Trusted Sources)
 # ==========================================
-# 这是一个简单的知识图谱，将新闻关键词映射到股票代码
-STOCK_MAPPING = {
-    "阿里云": {"name": "阿里巴巴", "symbol": "9988.HK", "market": "HK"},
-    "阿里": {"name": "阿里巴巴", "symbol": "BABA", "market": "US"},
-    "腾讯云": {"name": "腾讯控股", "symbol": "0700.HK", "market": "HK"},
-    "华为": {"name": "拓维信息", "symbol": "002261.SZ", "market": "CN", "note": "华为算力合作伙伴"},
-    "盘古": {"name": "四川长虹", "symbol": "600839.SS", "market": "CN", "note": "华鲲振宇概念"},
-    "百度": {"name": "百度集团", "symbol": "9888.HK", "market": "HK"},
-    "文心": {"name": "百度", "symbol": "BIDU", "market": "US"},
-    "算力": {"name": "中际旭创", "symbol": "300308.SZ", "market": "CN", "note": "光模块龙头"},
-    "液冷": {"name": "英维克", "symbol": "002837.SZ", "market": "CN"},
-    "微软": {"name": "Microsoft", "symbol": "MSFT", "market": "US"},
-    "AWS": {"name": "Amazon", "symbol": "AMZN", "market": "US"},
-    "Oracle": {"name": "Oracle", "symbol": "ORCL", "market": "US"},
-    "运营商": {"name": "中国移动", "symbol": "600941.SS", "market": "CN"},
-    "天翼云": {"name": "中国电信", "symbol": "601728.SS", "market": "CN"},
+# 系统将只放行包含以下关键词的来源
+TRUSTED_SOURCES = [
+    # --- 官方/党媒 ---
+    "新华", "人民网", "央视", "CCTV", "求是", "中国政府网", 
+    # --- 核心财经媒体 (四大报) ---
+    "证券时报", "中国证券报", "上海证券报", "证券日报", 
+    # --- 一线专业财经 ---
+    "财新", "第一财经", "每日经济新闻", "21世纪经济报道", "界面新闻", "澎湃", "经济日报", "金融界",
+    # --- 国际顶级信源 ---
+    "Reuters", "路透", "Bloomberg", "彭博", "CNBC", "Wall Street Journal",
+    # --- 科技垂直权威 ---
+    "36氪", "钛媒体" # 仅保留头部科技媒体，剔除普通自媒体
+]
+
+# ==========================================
+# 3. 产业链映射 (Mapping V3.0 - Policy Enhanced)
+# ==========================================
+SECTOR_MAPPING = {
+    # === 政策/国资云 (高优先级) ===
+    "政策": [{"name": "深桑达A", "symbol": "000032.SZ", "tag": "中国电子云"}, {"name": "易华录", "symbol": "300212.SZ", "tag": "数据湖"}],
+    "工信部": [{"name": "中国电信", "symbol": "601728.SS", "tag": "数字基建"}, {"name": "中国移动", "symbol": "600941.SS", "tag": "算力网络"}],
+    "算力网": [{"name": "中科曙光", "symbol": "603019.SS", "tag": "国家超算"}, {"name": "浪潮信息", "symbol": "000977.SZ", "tag": "服务器"}],
+    "数据局": [{"name": "云赛智联", "symbol": "600602.SS", "tag": "上海数据"}, {"name": "太极股份", "symbol": "002368.SZ", "tag": "政务云"}],
+
+    # === 核心硬科技 ===
+    "CPO": [{"name": "中际旭创", "symbol": "300308.SZ", "tag": "全球光模块"}, {"name": "新易盛", "symbol": "300502.SZ", "tag": "LPO技术"}],
+    "液冷": [{"name": "英维克", "symbol": "002837.SZ", "tag": "全链条液冷"}, {"name": "曙光数创", "symbol": "872808.BJ", "tag": "浸没式"}],
+    "华为云": [{"name": "拓维信息", "symbol": "002261.SZ", "tag": "昇腾+盘古"}, {"name": "软通动力", "symbol": "301236.SZ", "tag": "鸿蒙+欧拉"}],
+    
+    # === 全球映射 ===
+    "AWS": [{"name": "Amazon", "symbol": "AMZN", "tag": "Global Cloud"}],
+    "Azure": [{"name": "Microsoft", "symbol": "MSFT", "tag": "OpenAI Partner"}],
 }
 
+# 政策关键词组，用于给新闻打“政策”标签
+POLICY_KEYWORDS = ["印发", "通知", "行动计划", "白皮书", "十四五", "工信部", "发改委", "网信办", "数据局", "解读", "指南"]
+
 # ==========================================
-# 3. 功能函数
+# 4. 数据处理逻辑
 # ==========================================
 
-@st.cache_data(ttl=300)  # 缓存5分钟，避免频繁请求
-def fetch_cloud_news():
+def is_trusted_source(source_name):
+    """检查来源是否在白名单中"""
+    if not source_name: return False
+    for trusted in TRUSTED_SOURCES:
+        if trusted in source_name:
+            return True
+    return False
+
+def is_policy_news(title):
+    """检查是否属于政策类新闻"""
+    for kw in POLICY_KEYWORDS:
+        if kw in title:
+            return True
+    return False
+
+@st.cache_data(ttl=900) # 15分钟缓存，减轻接口压力
+def fetch_authoritative_news():
     """
-    使用 Google News RSS 获取实时新闻
-    搜索词涵盖主要的中国和全球云计算关键词
+    获取并严格过滤新闻
     """
-    # 编码后的搜索词：云计算 OR 阿里云 OR 华为云 OR 腾讯云 OR AWS OR Azure
-    rss_url = "https://news.google.com/rss/search?q=%E4%BA%91%E8%AE%A1%E7%AE%97+OR+%E9%98%BF%E9%87%8C%E4%BA%91+OR+%E5%8D%8E%E4%B8%BA%E4%BA%91+OR+%E8%85%BE%E8%AE%AF%E4%BA%91+OR+AWS+OR+%E7%AE%97%E5%8A%9B&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+    # 搜索查询构造：增加“政策、发改委”等宏观词
+    query = "云计算 OR 算力 OR 数据要素 OR 工业互联网 OR 阿里云 OR 华为云 OR 工信部 OR 发改委 when:7d"
+    encoded_query = query.replace(" ", "+")
+    
+    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
     
     feed = feedparser.parse(rss_url)
-    news_items = []
     
-    for entry in feed.entries[:20]: # 获取最新的20条
-        # 简单清洗时间
-        published = entry.get("published", "")
-        
-        item = {
-            "title": entry.title,
-            "link": entry.link,
-            "published": published,
-            "source": entry.source.title if hasattr(entry, 'source') else "未知来源"
-        }
-        news_items.append(item)
-        
-    return news_items
+    cleaned_data = []
+    seen_titles = set()
+    
+    cutoff_date = datetime.now(pd.Timestamp.now().tz.tzinfo) - timedelta(days=7)
+    
+    for entry in feed.entries:
+        try:
+            # 1. 时间过滤 (T-7)
+            pub_date = parser.parse(entry.published)
+            if pub_date.replace(tzinfo=None) < datetime.now() - timedelta(days=7):
+                continue
+                
+            # 2. 来源过滤 (核心步骤：只保留白名单)
+            source_name = entry.source.title if hasattr(entry, 'source') else ""
+            if not is_trusted_source(source_name):
+                continue
+                
+            # 3. 去重
+            if entry.title in seen_titles:
+                continue
+            seen_titles.add(entry.title)
+            
+            # 4. 识别属性
+            is_policy = is_policy_news(entry.title)
+            
+            item = {
+                "title": entry.title,
+                "link": entry.link,
+                "date_str": pub_date.strftime("%m-%d %H:%M"),
+                "source": source_name,
+                "is_policy": is_policy,
+                "timestamp": pub_date.timestamp()
+            }
+            cleaned_data.append(item)
+            
+        except Exception:
+            continue
+    
+    # 按时间倒序排列
+    cleaned_data.sort(key=lambda x: x['timestamp'], reverse=True)
+    return cleaned_data
 
-def analyze_sentiment_and_stocks(news_list):
+def map_alpha_targets(news_items):
     """
-    分析新闻，提取相关标的
+    根据新闻生成标的池
     """
-    recommendations = {} # 使用字典去重
+    targets = {}
     
-    for news in news_list:
-        title = news['title']
-        
-        # 遍历映射表查找关键词
-        for keyword, stock_info in STOCK_MAPPING.items():
-            if keyword in title:
-                symbol = stock_info['symbol']
-                if symbol not in recommendations:
-                    recommendations[symbol] = {
-                        "info": stock_info,
-                        "reasons": [title] # 记录触发推荐的新闻标题
-                    }
-                else:
-                    recommendations[symbol]['reasons'].append(title)
+    for news in news_items:
+        # 检查新闻标题是否命中 SECTOR_MAPPING 的 key
+        for keyword, stocks in SECTOR_MAPPING.items():
+            if keyword in news['title'] or (keyword == "政策" and news['is_policy']):
+                for stock in stocks:
+                    sym = stock['symbol']
+                    if sym not in targets:
+                        targets[sym] = {
+                            "info": stock,
+                            "score": 0,
+                            "drivers": []
+                        }
+                    # 政策新闻权重加倍
+                    weight = 2 if news['is_policy'] else 1
+                    targets[sym]['score'] += weight
+                    
+                    # 记录驱动理由 (去重)
+                    if len(targets[sym]['drivers']) < 2:
+                        targets[sym]['drivers'].append(f"{news['date_str']} {news['title']}")
     
-    return recommendations
+    # 转换为列表并排序 (按关联热度)
+    result_list = sorted(targets.values(), key=lambda x: x['score'], reverse=True)
+    return result_list
 
-def get_realtime_price(symbol_list):
+def get_market_data(target_list):
     """
-    使用 yfinance 获取实时价格变动
+    获取实时行情
     """
-    if not symbol_list:
-        return {}
+    if not target_list: return {}
     
-    data = {}
+    symbols = [t['info']['symbol'] for t in target_list]
+    unique_symbols = list(set(symbols))
+    
+    quotes = {}
     try:
-        tickers = yf.Tickers(" ".join(symbol_list))
-        for symbol in symbol_list:
+        # 批量请求
+        tickers = yf.Tickers(" ".join(unique_symbols))
+        
+        for sym in unique_symbols:
             try:
-                info = tickers.tickers[symbol].history(period="1d")
-                if not info.empty:
-                    close = info['Close'].iloc[-1]
-                    open_p = info['Open'].iloc[-1]
-                    # 如果是盘中，history通常返回最新价作为Close
-                    # 计算涨跌幅
-                    prev_close = tickers.tickers[symbol].info.get('previousClose', open_p)
-                    change_pct = ((close - prev_close) / prev_close) * 100
-                    data[symbol] = {"price": close, "change": change_pct}
+                hist = tickers.tickers[sym].history(period="1d")
+                if not hist.empty:
+                    curr = hist['Close'].iloc[-1]
+                    prev = tickers.tickers[sym].info.get('previousClose', hist['Open'].iloc[-1])
+                    chg = ((curr - prev) / prev) * 100 if prev else 0
+                    quotes[sym] = {"price": curr, "change": chg}
                 else:
-                     data[symbol] = {"price": 0, "change": 0}
+                    quotes[sym] = {"price": 0, "change": 0}
             except:
-                data[symbol] = {"price": 0, "change": 0}
-    except Exception as e:
-        st.error(f"行情数据获取失败: {e}")
-    
-    return data
+                quotes[sym] = {"price": 0, "change": 0}
+    except:
+        pass
+    return quotes
 
 # ==========================================
-# 4. 界面渲染
+# 5. 页面渲染
 # ==========================================
 
 # --- Sidebar ---
 with st.sidebar:
-    st.title("⚙️ 控制台")
-    st.write("数据源：Google News (Real-time)")
-    filter_option = st.radio("资讯范围", ["全部", "仅中国", "仅海外"])
-    st.info("💡 提示：本应用演示了基于新闻关键词的自动标的映射逻辑。")
-    if st.button("🔄 刷新数据"):
+    st.header("📡 信号控制台")
+    st.info("严格模式：已开启")
+    st.write("✅ 仅限官方/一级财经媒体")
+    st.write("✅ T-7 实时去重")
+    st.write("✅ 政策优先算法")
+    
+    st.divider()
+    st.write("📋 **当前白名单示例:**")
+    st.caption("新华、人民、财新、四大报、彭博、路透...")
+    
+    if st.button("🚀 刷新全网数据"):
         st.cache_data.clear()
         st.rerun()
 
-# --- Header ---
-st.title("CloudPulse CN ☁️ 云脉动")
-st.markdown("#### 洞察中国云端，链接全球算力价值")
-st.markdown("---")
+# --- Main ---
+st.title("CloudPulse Gov 🏛️")
+st.markdown("#### 权威信源驱动的云计算政策与市场监测")
 
-# --- Load Data ---
-with st.spinner('正在扫描全球云网络...'):
-    news_data = fetch_cloud_news()
-    reco_data = analyze_sentiment_and_stocks(news_data)
+with st.spinner("正在进行信源核查与政策NLP分析..."):
+    news_data = fetch_authoritative_news()
+    alpha_targets = map_alpha_targets(news_data)
+    quotes = get_market_data(alpha_targets)
+
+col1, col2 = st.columns([0.6, 0.4], gap="large")
+
+# === 左侧：权威资讯流 ===
+with col1:
+    st.subheader(f"📜 权威快讯 ({len(news_data)})")
     
-    # 获取行情
-    if reco_data:
-        symbols = list(reco_data.keys())
-        price_data = get_realtime_price(symbols)
-    else:
-        price_data = {}
-
-# --- Main Content Columns ---
-col_news, col_alpha = st.columns([2, 1])
-
-# === 左侧：资讯流 ===
-with col_news:
-    st.subheader("📰 行业情报 (T-7)")
+    if not news_data:
+        st.warning("过去一周未监测到白名单内的重大云计算新闻，或网络连接受限。")
     
     for news in news_data:
-        # 简单的过滤器逻辑
-        is_china = any(k in news['title'] for k in ["中国", "阿里", "腾讯", "华为", "百度", "电信", "移动"])
-        if filter_option == "仅中国" and not is_china:
-            continue
-        if filter_option == "仅海外" and is_china:
-            continue
-            
-        # 渲染卡片
+        # 样式判定
+        card_class = "policy-card" if news['is_policy'] else "market-card"
+        policy_badge = '<span class="meta-tag tag-policy">🏛️ 政策重磅</span>' if news['is_policy'] else ''
+        
         st.markdown(f"""
-        <div class="news-card">
-            <div class="news-title"><a href="{news['link']}" target="_blank" style="text-decoration:none; color:#1f2937;">{news['title']}</a></div>
-            <div class="news-meta">
-                <span>📅 {news['published']}</span> | 
-                <span>📢 {news['source']}</span>
+        <div class="{card_class}">
+            <div style="margin-bottom:6px;">
+                {policy_badge}
+                <span class="meta-tag tag-source">{news['source']}</span>
+                <span style="font-size:12px; color:#666;">{news['date_str']}</span>
             </div>
+            <a href="{news['link']}" target="_blank" class="news-title">
+                {news['title']}
+            </a>
         </div>
         """, unsafe_allow_html=True)
 
-# === 右侧：标的推荐 ===
-with col_alpha:
-    st.subheader("🎯 智能标的 (Alpha Picks)")
-    st.caption("基于本周新闻热度自动生成")
+# === 右侧：逻辑映射标的 ===
+with col2:
+    st.subheader("📊 标的映射 (Alpha Logic)")
     
-    if not reco_data:
-        st.warning("当前新闻流中未检测到明确的关联标的。")
+    if not alpha_targets:
+        st.write("当前资讯流未触发明确标的逻辑。")
     
-    for symbol, data in reco_data.items():
-        info = data['info']
-        market_data = price_data.get(symbol, {"price": 0, "change": 0})
+    for item in alpha_targets:
+        info = item['info']
+        sym = info['symbol']
+        mkt = quotes.get(sym, {"price": 0, "change": 0})
         
-        # 颜色逻辑
-        change = market_data['change']
-        color_class = "positive" if change >= 0 else "negative"
-        arrow = "🔺" if change >= 0 else "🔻"
+        color = "up" if mkt['change'] >= 0 else "down"
+        arrow = "▲" if mkt['change'] >= 0 else "▼"
         
-        # 映射理由摘要（取第一条新闻的截断）
-        reason_text = data['reasons'][0][:30] + "..."
+        # 构造驱动理由列表
+        drivers_html = "".join([f"<li style='font-size:11px; color:#555; margin-top:3px;'>{d}</li>" for d in item['drivers']])
         
-        # 渲染股票卡片
         st.markdown(f"""
         <div class="stock-card">
-            <h4 style="margin:0;">{info['name']}</h4>
-            <div style="color:#666; font-size:12px; margin-bottom:5px;">{symbol} ({info.get('note', '云计算概念')})</div>
-            <div class="{color_class}" style="font-size:20px;">
-                {market_data['price']:.2f} <span style="font-size:14px;">{arrow} {change:.2f}%</span>
+            <div style="display:flex; justify-content:space-between;">
+                <div>
+                    <div style="font-weight:700; font-size:16px;">{info['name']}</div>
+                    <div style="font-size:12px; color:#64748b;">{sym} · {info['tag']}</div>
+                </div>
+                <div style="text-align:right;">
+                    <div class="{color}" style="font-size:18px;">{mkt['price']:.2f}</div>
+                    <div class="{color}" style="font-size:12px;">{arrow} {mkt['change']:.2f}%</div>
+                </div>
             </div>
-            <div style="font-size:11px; color:#888; margin-top:8px; text-align:left; border-top:1px dashed #eee; padding-top:5px;">
-                <b>驱动事件：</b><br>{reason_text}
+            <div style="margin-top:10px; padding-top:8px; border-top:1px dashed #eee;">
+                <span style="font-size:11px; font-weight:bold; color:#475569;">⚡ 逻辑/事件驱动:</span>
+                <ul style="padding-left:15px; margin-bottom:0;">
+                    {drivers_html}
+                </ul>
             </div>
         </div>
-        <br>
         """, unsafe_allow_html=True)
 
-# --- Footer ---
-st.markdown("---")
-st.caption("免责声明：本页面数据由算法自动聚合，行情数据可能有延迟，不构成投资建议。")
+st.divider()
+st.caption("免责声明：本系统仅依据公开权威媒体信息进行逻辑关联，不构成投资建议。政策解读请以政府官网原文为准。")
